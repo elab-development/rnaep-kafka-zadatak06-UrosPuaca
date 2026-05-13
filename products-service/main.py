@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from typing import List
 from models import Product
 import asyncio, json
+from datetime import datetime, timezone
 
 producer = AIOKafkaProducer(bootstrap_servers='kafka:9092')
 
@@ -38,11 +39,25 @@ async def consume(consumer: AIOKafkaConsumer):
             order = json.loads(msg.value.decode('utf-8'))
             product = products_db.get(order['product_id'])
             
-            if product and product.quantity >= order['quantity']:
+            if product is None:
+                await producer.send_and_wait("product_not_found_events", json.dumps({
+                    "order_id": order['id'],
+                    "product_id": order['product_id'],
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "error_reason": f"Product with id {order['product_id']} does not exist."
+                }).encode('utf-8'))
+            elif product.quantity >= order['quantity']:
                 product.quantity -= order['quantity']
                 await producer.send_and_wait("order-confirmed", json.dumps({
                     "order_id": order['id'],
                     "product_id": product.id
+                }).encode('utf-8'))
+            else:
+                await producer.send_and_wait("out_of_stock_events", json.dumps({
+                    "order_id": order['id'],
+                    "product_id": product.id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "error_reason": f"Insufficient stock for product {product.id}: requested {order['quantity']}, available {product.quantity}."
                 }).encode('utf-8'))
     except asyncio.CancelledError:
         pass
